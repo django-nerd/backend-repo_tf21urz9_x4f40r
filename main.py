@@ -239,19 +239,19 @@ def view_page(slug: str):
                 pass
         return HTMLResponse(status_code=410, content="<html><body><div style='font-family:system-ui;padding:16px'>This temporary page has expired.</div></body></html>")
 
-    # Minimal chrome: plain white background, no borders; render raw HTML exactly
-    # Add a tiny unobtrusive timer + copy link in a corner using inline styles
+    # Build timer widget without using str.format to avoid brace conflicts
     remaining = int((expires_at - now).total_seconds())
     timer_html = (
         """
     <div id=\"_meta\" style=\"position:fixed;right:8px;bottom:8px;z-index:9999;font:12px/1.2 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#444;background:rgba(255,255,255,0.7);backdrop-filter:saturate(1.2) blur(2px);padding:6px 8px;border-radius:6px\">
-      <span id=\"_time\">{remaining}</span>s
+      <span id=\"_time\"></span>s
       <button id=\"_copy\" style=\"margin-left:8px;background:#000;color:#fff;border:none;padding:4px 6px;border-radius:4px;cursor:pointer;font-size:12px\">Copy link</button>
     </div>
     <script>
       (function(){
-        var t = {{remaining: __REM__}};
+        var t = {remaining: __REM__};
         var el = document.getElementById('_time');
+        el.textContent = t.remaining;
         var iv = setInterval(function(){
           if(!el) return;
           if(t.remaining <= 0){ clearInterval(iv); location.reload(); return; }
@@ -263,7 +263,7 @@ def view_page(slug: str):
       })();
     </script>
     """
-    ).format(remaining=remaining).replace("__REM__", str(remaining))
+    ).replace("__REM__", str(remaining))
 
     content_html = doc["html"] or ""
     html = f"""
