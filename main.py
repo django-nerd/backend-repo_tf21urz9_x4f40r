@@ -39,12 +39,20 @@ class PageCreate(BaseModel):
     assets: Optional[List[str]] = Field(default_factory=list, description="List of asset paths associated with this page")
 
 
+def to_iso_utc(dt: datetime) -> str:
+    """Return ISO8601 with timezone info (assume UTC if naive)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
 @app.on_event("startup")
 async def startup_cleanup_task():
     async def cleanup_loop():
         while True:
             try:
-                now = datetime.now(timezone.utc)
+                # Use naive UTC consistently for Mongo comparisons
+                now = datetime.utcnow()
                 expired = list(db["page"].find({"expires_at": {"$lte": now}}))
                 if expired:
                     # delete associated assets
@@ -146,7 +154,8 @@ def generate_slug(length: int = 8) -> str:
 
 @app.post("/api/pages")
 def create_page(payload: PageCreate):
-    now = datetime.now(timezone.utc)
+    # Use naive UTC to store in Mongo to avoid tz-aware comparisons
+    now = datetime.utcnow()
     ttl = payload.ttl_seconds or DEFAULT_TTL_SECONDS
     expires_at = now + timedelta(seconds=ttl)
     slug = generate_slug(8)
@@ -163,7 +172,7 @@ def create_page(payload: PageCreate):
     return {
         "slug": slug,
         "url": f"/p/{slug}",
-        "expires_at": expires_at.isoformat(),
+        "expires_at": to_iso_utc(expires_at),
         "ttl_seconds": ttl,
     }
 
@@ -173,8 +182,13 @@ def get_page(slug: str):
     doc = db["page"].find_one({"slug": slug})
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
-    now = datetime.now(timezone.utc)
-    if doc["expires_at"] <= now:
+    now = datetime.utcnow()
+    expires_at: datetime = doc["expires_at"]
+    # Normalize any tz-aware to naive UTC for comparison
+    if isinstance(expires_at, datetime) and expires_at.tzinfo is not None:
+        expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+
+    if expires_at <= now:
         # delete on access
         db["page"].delete_one({"_id": doc["_id"]})
         # try to remove assets
@@ -190,11 +204,11 @@ def get_page(slug: str):
                 pass
         raise HTTPException(status_code=410, detail="Expired")
 
-    remaining = int((doc["expires_at"] - now).total_seconds())
+    remaining = int((expires_at - now).total_seconds())
     return {
         "slug": doc["slug"],
         "html": doc["html"],
-        "expires_at": doc["expires_at"].isoformat(),
+        "expires_at": to_iso_utc(expires_at),
         "remaining_seconds": max(0, remaining),
         "assets": doc.get("assets", []),
     }
@@ -205,8 +219,12 @@ def view_page(slug: str):
     doc = db["page"].find_one({"slug": slug})
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
-    now = datetime.now(timezone.utc)
-    if doc["expires_at"] <= now:
+    now = datetime.utcnow()
+    expires_at: datetime = doc["expires_at"]
+    if isinstance(expires_at, datetime) and expires_at.tzinfo is not None:
+        expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+
+    if expires_at <= now:
         # delete on access
         db["page"].delete_one({"_id": doc["_id"]})
         for asset in doc.get("assets", []) or []:
@@ -223,7 +241,7 @@ def view_page(slug: str):
 
     # Minimal chrome: plain white background, no borders; render raw HTML exactly
     # Add a tiny unobtrusive timer + copy link in a corner using inline styles
-    remaining = int((doc["expires_at"] - now).total_seconds())
+    remaining = int((expires_at - now).total_seconds())
     timer_html = (
         """
     <div id=\"_meta\" style=\"position:fixed;right:8px;bottom:8px;z-index:9999;font:12px/1.2 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#444;background:rgba(255,255,255,0.7);backdrop-filter:saturate(1.2) blur(2px);padding:6px 8px;border-radius:6px\">
